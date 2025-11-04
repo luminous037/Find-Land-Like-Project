@@ -1,0 +1,42 @@
+# docker-compose.yml
+version: '3.8'
+
+networks:
+  security_net:
+    driver: bridge
+    ipam:
+      config:
+        # 클라이언트가 사용할 IP 대역 지정 (서버 IP 고정을 위함)
+        - subnet: 172.20.0.0/24
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    # LAND-TEST를 위해 서버 컨테이너에 고정 IP 지정
+    hostname: land-detector
+    networks:
+      security_net:
+        ipv4_address: 172.20.0.2  # 클라이언트 코드의 TARGET_SERVER_IP와 일치해야 함
+    volumes:
+      - ./server/data:/app/server/data
+    ports:
+      - "5000:5000/udp" # UDP 포트
+    # Raw Socket 사용을 위한 필수 설정
+    cap_add:
+      - NET_ADMIN
+    
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    hostname: attacker
+    networks:
+      security_net:
+        # 클라이언트 IP (172.20.0.3)
+        ipv4_address: 172.20.0.3
+    # 클라이언트는 서버보다 늦게 실행하여 테스트해야함
+    entrypoint: ["tail", "-f", "/dev/null"] # 컨테이너를 종료하지 않고 대기
+    depends_on:
+      - server
