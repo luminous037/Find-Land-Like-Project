@@ -1,4 +1,3 @@
-# docker-compose.yml
 version: '3.8'
 
 networks:
@@ -14,29 +13,57 @@ services:
     build:
       context: ./server
       dockerfile: Dockerfile
-    # LAND-TEST를 위해 서버 컨테이너에 고정 IP 지정
     hostname: land-detector
     networks:
       security_net:
-        ipv4_address: 172.20.0.2  # 클라이언트 코드의 TARGET_SERVER_IP와 일치해야 함
+        ipv4_address: 172.20.0.2 # TARGET_SERVER_IP와 일치
     volumes:
       - ./server/data:/app/server/data
     ports:
       - "5000:5000/udp" # UDP 포트
-    # Raw Socket 사용을 위한 필수 설정
     cap_add:
       - NET_ADMIN
-    
+      
+    # 서버 시작 명령: rp_filter 비활성화 및 서버 실행
+    command: >
+        /bin/bash -c "
+          echo 'Disabling rp_filter on server...' && \
+          echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter;
+          /usr/local/bin/python /app/server.py
+        "
+      
   client:
-    build:
-      context: ./client
-      dockerfile: Dockerfile
-    hostname: attacker
-    networks:
-      security_net:
-        # 클라이언트 IP (172.20.0.3)
-        ipv4_address: 172.20.0.3
-    # 클라이언트는 서버보다 늦게 실행하여 테스트해야함
-    entrypoint: ["tail", "-f", "/dev/null"] # 컨테이너를 종료하지 않고 대기
-    depends_on:
-      - server
+      build:
+        context: ./client
+        dockerfile: Dockerfile
+      hostname: attacker
+      networks:
+        security_net:
+          ipv4_address: 172.20.0.3 # 클라이언트의 실제 IP
+      
+      cap_add:
+        - NET_ADMIN
+        
+      # 역 경로 필터링 (rp_filter) 비활성화 (sysctls 대신 command에서 처리)
+
+      # IP 포워딩 비활성화, FORWARD 체인 ACCEPT 규칙 추가
+      command: >
+        /bin/bash -c "
+          echo 'Disabling rp_filter...' && \
+          echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter;
+          
+          echo 'Disabling ip_forward (Preventing routing and NAT)...' && \
+          echo 0 > /proc/sys/net/ipv4/ip_forward; 
+
+          echo 'Adding NAT bypass rule (ACCEPT 172.20.0.2) to FORWARD and NAT tables...' && \
+          # 1. FORWARD 체인에 ACCEPT 규칙 추가 (라우팅 방지)
+          iptables -t filter -I FORWARD 1 -s 172.20.0.2 -j ACCEPT;
+          
+          # 2. NAT POSTROUTING 규칙 (Source NAT 방지)
+          iptables -t nat -I POSTROUTING 1 -s 172.20.0.2 -j ACCEPT;
+          
+          echo 'Rule applied. Starting client daemon...' && \
+          /usr/bin/tail -f /dev/null
+        "
+      depends_on:
+        - server
